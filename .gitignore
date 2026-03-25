@@ -1,0 +1,10 @@
+.git/
+__pycache__/
+*.pyc
+*.pth
+*.zip
+*.rar
+data/
+outputs/
+logs/
+.ipynb_checkpoints/
