@@ -1,165 +1,112 @@
 # -*- coding: utf-8 -*-
-# @Time    : 2020/7/22
-# @Author  : Lart Pang
-# @Email   : lartpang@163.com
-# @File    : dataloader.py
-# @Project : code
-# @GitHub  : https://github.com/lartpang
 import os
 import random
-from functools import partial
-
+import cv2
 import torch
-from PIL import Image
-
+import numpy as np
+from PIL import Image, ImageEnhance
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-
-from joint_transforms import (
-    Compose,
-    JointResize,
-    RandomHorizontallyFlip,
-    RandomRotate,
-)
-from misc import construct_print
-import albumentations
-from PIL import ImageEnhance
-import numpy as np
-def colorEnhance(image):
-    bright_intensity = random.randint(5, 15) / 10.0
-    image = ImageEnhance.Brightness(image).enhance(bright_intensity)
-    contrast_intensity = random.randint(5, 15) / 10.0
-    image = ImageEnhance.Contrast(image).enhance(contrast_intensity)
-    color_intensity = random.randint(0, 20) / 10.0
-    image = ImageEnhance.Color(image).enhance(color_intensity)
-    sharp_intensity = random.randint(0, 30) / 10.0
-    image = ImageEnhance.Sharpness(image).enhance(sharp_intensity)
-    return image
-
-
-def randomGaussian(image, mean=0.1, sigma=0.35):
-    def gaussianNoisy(im, mean=mean, sigma=sigma):
-        for _i in range(len(im)):
-            im[_i] += random.gauss(mean, sigma)
-        return im
-
-    img = np.asarray(image)
-    width, height = img.shape
-    img = gaussianNoisy(img[:].flatten(), mean, sigma)
-    img = img.reshape([width, height])
-    return Image.fromarray(np.uint8(img))
-
-
-def randomPeper(img):
-    img = np.array(img)
-    noiseNum = int(0.0015 * img.shape[0] * img.shape[1])
-    for i in range(noiseNum):
-
-        randX = random.randint(0, img.shape[0] - 1)
-
-        randY = random.randint(0, img.shape[1] - 1)
-
-        if random.randint(0, 1) == 0:
-
-            img[randX, randY] = 0
-
-        else:
-
-            img[randX, randY] = 255
-    return Image.fromarray(img)
-
-import cv2
 import albumentations as albu
+
 class ImageFolder(Dataset):
     def __init__(self, image_root, gt_root, trainsize=384, is_train=False):
         self.training = is_train
         self.trainsize = trainsize
 
-        self.images = [image_root + f for f in os.listdir(image_root)]
-        self.gts = [gt_root + p for p in os.listdir(gt_root)]
+        self.images = [os.path.join(image_root, f) for f in os.listdir(image_root)]
+        self.gts = [os.path.join(gt_root, p) for p in os.listdir(gt_root)]
         self.images = sorted(self.images)
         self.gts = sorted(self.gts)
 
-        self.joint_transform = Compose(
-            [JointResize(trainsize), RandomHorizontallyFlip(), RandomRotate(10)]
-        )
+        # 数据增强 (只保留像素级和翻转，移除会导致裂缝变形的 Resize)
         self.aug_transform = albu.Compose([
-            #  albu.RandomScale(scale_limit=0.25, p=0.5),
             albu.HorizontalFlip(p=0.5),
-            # albu.VerticalFlip(p=0.5),
-            albu.Rotate(limit=15, p=0.5),
+            albu.VerticalFlip(p=0.5),
             albu.RandomRotate90(p=0.5),
         ])
 
         self.img_transform = self.get_transform()
-        self.gt_transform = transforms.Compose([
-            transforms.Resize((self.trainsize, self.trainsize)),
-            transforms.ToTensor()])
-        self.edge_transform = transforms.Compose([
-            transforms.Resize((self.trainsize, self.trainsize)),
-            transforms.ToTensor()])
+        # mask 只需要转为 Tensor，不需要正则化
+        self.gt_transform = transforms.ToTensor()
 
+    def get_crop_params(self, gt_np):
+        """ 7:3 动态裁剪策略 """
+        h, w = gt_np.shape
+        crop_size = self.trainsize
+        
+        # 如果图像比 crop_size 小，直接返回左上角(0,0)，后续进行 padding 或 resize
+        if h <= crop_size or w <= crop_size:
+            return 0, 0
+
+        # 70% 概率强行在裂缝周围裁剪 (前提是图里有裂缝，假设裂缝像素 > 0)
+        if random.random() < 0.7 and np.any(gt_np > 0):
+            y_indices, x_indices = np.where(gt_np > 0)
+            idx = random.randint(0, len(y_indices) - 1)
+            center_y, center_x = y_indices[idx], x_indices[idx]
+            
+            # 引入随机抖动，防止每次裂缝都在正中心
+            jitter_y = random.randint(-crop_size//2, crop_size//2)
+            jitter_x = random.randint(-crop_size//2, crop_size//2)
+            
+            y1 = max(0, center_y - crop_size // 2 + jitter_y)
+            x1 = max(0, center_x - crop_size // 2 + jitter_x)
+            
+            # 确保不越界
+            y1 = min(h - crop_size, y1)
+            x1 = min(w - crop_size, x1)
+        else:
+            # 30% 概率纯随机裁剪（充当纯背景或包含噪点的难负样本）
+            y1 = random.randint(0, h - crop_size)
+            x1 = random.randint(0, w - crop_size)
+            
+        return y1, x1
 
     def __getitem__(self, index):
-        image = self.rgb_loader(self.images[index])
-        gt = self.binary_loader(self.gts[index])
-        image_size = image.size
-        # data augumentation
-        #image, gt = self.joint_transform(image,gt)
+        image = cv2.imread(self.images[index])
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        gt = cv2.imread(self.gts[index], cv2.IMREAD_GRAYSCALE)
 
-        image, gt = self.aug_transform(image=np.asarray(image), mask=np.asarray(gt)).values()
+        if self.training:
+            # 使用 7:3 策略进行 Patch 裁剪
+            y1, x1 = self.get_crop_params(gt)
+            if gt.shape[0] > self.trainsize and gt.shape[1] > self.trainsize:
+                image = image[y1:y1+self.trainsize, x1:x1+self.trainsize]
+                gt = gt[y1:y1+self.trainsize, x1:x1+self.trainsize]
+            else:
+                # 兜底：如果原图很小，则 Resize
+                image = cv2.resize(image, (self.trainsize, self.trainsize))
+                gt = cv2.resize(gt, (self.trainsize, self.trainsize), interpolation=cv2.INTER_NEAREST)
+            
+            # 执行 Albumentations 数据增强
+            augmented = self.aug_transform(image=image, mask=gt)
+            image, gt = augmented['image'], augmented['mask']
+        else:
+            # 测试时为了对齐评估，保持原有的缩放逻辑（后续再引入滑窗推理）
+            image = cv2.resize(image, (self.trainsize, self.trainsize))
+            gt = cv2.resize(gt, (self.trainsize, self.trainsize), interpolation=cv2.INTER_NEAREST)
 
-        gt = np.asarray(gt)
-        edge = cv2.Canny(gt, 100, 200)
-        kernel = np.ones((5, 5), np.uint8)
-        edge = cv2.dilate(edge, kernel, iterations=1)
-        # opencv-->PIL
-        # image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         image = Image.fromarray(image)
         gt = Image.fromarray(gt)
-        edge = Image.fromarray(edge)
 
         image = self.img_transform(image)
         gt = self.gt_transform(gt)
-        edge = self.edge_transform(edge)
 
-        return {'image': image, 'label': gt,"edge":edge}
-
-
-    def rgb_loader(self, path):
-        with open(path, 'rb') as f:
-            img = Image.open(f)
-            return img.convert('RGB')
-
-    def binary_loader(self, path):
-        with open(path, 'rb') as f:
-            img = Image.open(f)
-            return img.convert('L')
+        return {'image': image, 'label': gt}
 
     def get_transform(self, mean=None, std=None):
         mean = [0.485, 0.456, 0.406] if mean is None else mean
         std = [0.229, 0.224, 0.225] if std is None else std
-        transform = transforms.Compose([
-            transforms.Resize((self.trainsize, self.trainsize)),
+        return transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(mean, std)])
-        return transform
+            transforms.Normalize(mean, std)
+        ])
 
     def __len__(self):
         return len(self.images)
 
-
-import torch.utils.data as data
 def get_loader(image_root, gt_root, batchsize, trainsize, is_train=False, shuffle=True, num_workers=0, pin_memory=True):
     dataset = ImageFolder(image_root, gt_root, trainsize, is_train)
-
-    data_loader = data.DataLoader(dataset=dataset,
-                                  batch_size=batchsize,
-                                  shuffle=shuffle,
-                                  num_workers=num_workers,
-                                  pin_memory=pin_memory, drop_last=True)
-
-
-
+    data_loader = DataLoader(dataset=dataset, batch_size=batchsize, shuffle=shuffle,
+                             num_workers=num_workers, pin_memory=pin_memory, drop_last=True)
     return data_loader
-

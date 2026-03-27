@@ -12,6 +12,7 @@ from model.transformer import Transformer, SelfAttentionLayer, FFNLayer, MLP, _g
 
 from model import wavelet
 
+
 class DDFusion(nn.Module):
     def __init__(self, in_channels, dct_h=8):
         super(DDFusion, self).__init__()
@@ -197,17 +198,17 @@ class DSConv3x3(nn.Module):
 
 class MultiheadAttention(nn.Module):
     def __init__(self, d_model, h, dropout=0.0):
-        "Take in model size and number of heads."
         super(MultiheadAttention, self).__init__()
         assert d_model % h == 0
-        # We assume d_v always equals d_k
         self.d_k = d_model // h
         self.h = h
 
         self.norm1 = nn.LayerNorm(d_model)
 
-
         self.pool = wavelet.WavePool(d_model)
+        # 【新增】引入我们的 AFDP 双域感知融合模块
+        self.afdp_fusion = wavelet.WaveletAFDP_Fusion(d_model) 
+        
         self.self_attn1 = nn.MultiheadAttention(d_model, h, dropout=dropout, batch_first=True)
         self.mscw1 = MSCW(d_model=d_model)
 
@@ -217,10 +218,7 @@ class MultiheadAttention(nn.Module):
         self.mscw2 = MSCW(d_model=d_model)
         self.norm2 = nn.LayerNorm(d_model)
 
-
-
     def forward(self, query, key, value, attn_mask=None):
-
         query = query.transpose(0, 1)
         key = key.transpose(0, 1)
         value = value.transpose(0, 1)
@@ -228,20 +226,22 @@ class MultiheadAttention(nn.Module):
         hw = int(math.sqrt(n1))
 
         feat = key.transpose(1, 2).view(b, c, hw, hw)
-        #
         LL, HL, LH, HH = self.pool(feat)
-        high_fre = HL + LH + HH
-        low_fre = LL
-        high_fre = high_fre.flatten(2).transpose(1, 2)
-        low_fre = low_fre.flatten(2).transpose(1, 2)
-        wei = self.mscw1(high_fre+low_fre)
-
-        fre = wei*high_fre+low_fre
-        query1 =query
+        
+        # 【替换原有的低效频率相加，使用 AFDP】
+        fused_feat = self.afdp_fusion(LL, HL, LH, HH) 
+        
+        # 展平回序列格式输入后续网络
+        fused_seq = fused_feat.flatten(2).transpose(1, 2)
+        
+        wei = self.mscw1(fused_seq)
+        fre = wei * fused_seq + fused_seq
+        
+        query1 = query
         x1 = self.self_attn1(query=query1, key=fre, value=fre, attn_mask=None)[0]
         x1 = self.norm1(x1+query1)
 
-        # channel attention
+        # channel attention (保持原逻辑不变)
         feat = self.conv3x3(feat).flatten(2).transpose(1, 2)
         multi_heads_weights = self.Mheads(feat)
         multi_heads_weights = multi_heads_weights.view((b, n1, self.proto_size))
@@ -254,8 +254,6 @@ class MultiheadAttention(nn.Module):
         x2 = self.norm2(x2)
 
         x = x1+x2
-
-
         return x.transpose(0, 1)
 
 

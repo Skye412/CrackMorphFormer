@@ -109,3 +109,40 @@ class WaveUnpool(nn.Module):
                               self.HL(HL), self.HH(HH)], dim=1)
         else:
             raise NotImplementedError
+
+import torch.nn.functional as F
+
+class WaveletAFDP_Fusion(nn.Module):
+    """
+    频空联合的双域感知模块: Wavelet-AFDP + 结构感知连通
+    """
+    def __init__(self, in_channels):
+        super(WaveletAFDP_Fusion, self).__init__()
+        # 1x1 卷积生成软掩码 (AFDP 门控)
+        self.gate_ll = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1), nn.Sigmoid())
+        self.gate_hl = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1), nn.Sigmoid())
+        self.gate_lh = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1), nn.Sigmoid())
+        self.gate_hh = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1), nn.Sigmoid())
+        
+        self.high_freq_conv = nn.Conv2d(in_channels * 3, in_channels, kernel_size=3, padding=1)
+        
+        # 结构感知模块：使用十字条形卷积顺应裂缝方向提取特征 (平替 Mamba)
+        self.structure_aware_module = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels, kernel_size=(1, 9), padding=(0, 4), groups=in_channels),
+            nn.Conv2d(in_channels, in_channels, kernel_size=(9, 1), padding=(4, 0), groups=in_channels),
+            nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        )
+
+    def forward(self, ll, hl, lh, hh):
+        # 施加软掩码，抑制低频背景，增强高频裂缝方向边缘
+        ll_gated = ll * self.gate_ll(ll)
+        hl_gated = hl * self.gate_hl(hl)
+        lh_gated = lh * self.gate_lh(lh)
+        hh_gated = hh * self.gate_hh(hh)
+        
+        # 聚合高频特征并执行结构感知连通
+        high_freq = torch.cat([hl_gated, lh_gated, hh_gated], dim=1)
+        high_freq = self.high_freq_conv(high_freq)
+        high_freq_enhanced = self.structure_aware_module(high_freq)
+            
+        return ll_gated + high_freq_enhanced
