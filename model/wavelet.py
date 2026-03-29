@@ -1,16 +1,9 @@
-"""wavelet pool.
-
-    Paper: Photorealistic Style Transfer via Wavelet Transforms
-    Ref git repo: https://github.com/clovaai/WCT2.git.
-
-"""
 import torch
 import torch.nn as nn
 import numpy as np
 
-
 def get_wav(in_channels, pool=True):
-    """wavelet decomposition using conv2d"""
+    """标准的 Haar 小波池化"""
     harr_wav_L = 1 / np.sqrt(2) * np.ones((1, 2))
     harr_wav_H = 1 / np.sqrt(2) * np.ones((1, 2))
     harr_wav_H[0, 0] = -1 * harr_wav_H[0, 0]
@@ -25,60 +18,21 @@ def get_wav(in_channels, pool=True):
     filter_HL = torch.from_numpy(harr_wav_HL).unsqueeze(0)
     filter_HH = torch.from_numpy(harr_wav_HH).unsqueeze(0)
 
-    if pool:
-        net = nn.Conv2d
-    else:
-        net = nn.ConvTranspose2d
+    net = nn.Conv2d if pool else nn.ConvTranspose2d
 
-    LL = net(in_channels, in_channels,
-             kernel_size=2, stride=2, padding=0, bias=False,
-             groups=in_channels)
-    LH = net(in_channels, in_channels,
-             kernel_size=2, stride=2, padding=0, bias=False,
-             groups=in_channels)
-    HL = net(in_channels, in_channels,
-             kernel_size=2, stride=2, padding=0, bias=False,
-             groups=in_channels)
-    HH = net(in_channels, in_channels,
-             kernel_size=2, stride=2, padding=0, bias=False,
-             groups=in_channels)
+    LL = net(in_channels, in_channels, kernel_size=2, stride=2, padding=0, bias=False, groups=in_channels)
+    LH = net(in_channels, in_channels, kernel_size=2, stride=2, padding=0, bias=False, groups=in_channels)
+    HL = net(in_channels, in_channels, kernel_size=2, stride=2, padding=0, bias=False, groups=in_channels)
+    HH = net(in_channels, in_channels, kernel_size=2, stride=2, padding=0, bias=False, groups=in_channels)
 
-    LL.weight.requires_grad = False
-    LH.weight.requires_grad = False
-    HL.weight.requires_grad = False
-    HH.weight.requires_grad = False
+    for l in [LL, LH, HL, HH]: l.weight.requires_grad = False
 
-    LL.weight.data = filter_LL.float().unsqueeze(0)\
-        .expand(in_channels, -1, -1, -1).clone()
-    LH.weight.data = filter_LH.float().unsqueeze(0)\
-        .expand(in_channels, -1, -1, -1).clone()
-    HL.weight.data = filter_HL.float().unsqueeze(0)\
-        .expand(in_channels, -1, -1, -1).clone()
-    HH.weight.data = filter_HH.float().unsqueeze(0)\
-        .expand(in_channels, -1, -1, -1).clone()
+    LL.weight.data = filter_LL.float().unsqueeze(0).expand(in_channels, -1, -1, -1).clone()
+    LH.weight.data = filter_LH.float().unsqueeze(0).expand(in_channels, -1, -1, -1).clone()
+    HL.weight.data = filter_HL.float().unsqueeze(0).expand(in_channels, -1, -1, -1).clone()
+    HH.weight.data = filter_HH.float().unsqueeze(0).expand(in_channels, -1, -1, -1).clone()
 
     return LL, LH, HL, HH
-
-
-# Learnable wavelet
-def get_learned_wav(in_channels, pool=True):
-
-    if pool:
-        net = nn.Conv2d
-    else:
-        net = nn.ConvTranspose2d
-
-    LL = net(in_channels, in_channels,
-             kernel_size=2, stride=2, padding=0)
-    LH = net(in_channels, in_channels,
-             kernel_size=2, stride=2, padding=0)
-    HL = net(in_channels, in_channels,
-             kernel_size=2, stride=2, padding=0)
-    HH = net(in_channels, in_channels,
-             kernel_size=2, stride=2, padding=0)
-
-    return LL, LH, HL, HH
-
 
 class WavePool(nn.Module):
     def __init__(self, in_channels):
@@ -88,61 +42,19 @@ class WavePool(nn.Module):
     def forward(self, x):
         return self.LL(x), self.LH(x), self.HL(x), self.HH(x)
 
-
-class WaveUnpool(nn.Module):
-    def __init__(self, in_channels, option_unpool='cat5'):
-        super(WaveUnpool, self).__init__()
-        self.in_channels = in_channels
-        self.option_unpool = option_unpool
-        self.LL, self.LH, self.HL, self.HH = get_learned_wav(
-            self.in_channels, pool=False
-        )
-
-    def forward(self, LL, LH, HL, HH, original=None):
-        if self.option_unpool == 'sum':
-            return self.LL(LL) + self.LH(LH) + self.HL(HL) + self.HH(HH)
-        elif self.option_unpool == 'cat5' and original is not None:
-            return torch.cat([self.LL(LL), self.LH(LH),
-                              self.HL(HL), self.HH(HH), original], dim=1)
-        elif self.option_unpool == 'cat5' and original is None:
-            return torch.cat([LL, self.LH(LH),
-                              self.HL(HL), self.HH(HH)], dim=1)
-        else:
-            raise NotImplementedError
-
-import torch.nn.functional as F
-
 class WaveletAFDP_Fusion(nn.Module):
-    """
-    频空联合的双域感知模块: Wavelet-AFDP + 结构感知连通
-    """
+    """创新：方向感知小波频域门控 (Wavelet-AFDP)"""
     def __init__(self, in_channels):
         super(WaveletAFDP_Fusion, self).__init__()
-        # 1x1 卷积生成软掩码 (AFDP 门控)
         self.gate_ll = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1), nn.Sigmoid())
         self.gate_hl = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1), nn.Sigmoid())
         self.gate_lh = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1), nn.Sigmoid())
         self.gate_hh = nn.Sequential(nn.Conv2d(in_channels, in_channels, 1), nn.Sigmoid())
-        
-        self.high_freq_conv = nn.Conv2d(in_channels * 3, in_channels, kernel_size=3, padding=1)
-        
-        # 结构感知模块：使用十字条形卷积顺应裂缝方向提取特征 (平替 Mamba)
-        self.structure_aware_module = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, kernel_size=(1, 9), padding=(0, 4), groups=in_channels),
-            nn.Conv2d(in_channels, in_channels, kernel_size=(9, 1), padding=(4, 0), groups=in_channels),
-            nn.Conv2d(in_channels, in_channels, kernel_size=1)
-        )
+        self.fusion = nn.Conv2d(in_channels * 4, in_channels, kernel_size=3, padding=1)
 
     def forward(self, ll, hl, lh, hh):
-        # 施加软掩码，抑制低频背景，增强高频裂缝方向边缘
         ll_gated = ll * self.gate_ll(ll)
         hl_gated = hl * self.gate_hl(hl)
         lh_gated = lh * self.gate_lh(lh)
         hh_gated = hh * self.gate_hh(hh)
-        
-        # 聚合高频特征并执行结构感知连通
-        high_freq = torch.cat([hl_gated, lh_gated, hh_gated], dim=1)
-        high_freq = self.high_freq_conv(high_freq)
-        high_freq_enhanced = self.structure_aware_module(high_freq)
-            
-        return ll_gated + high_freq_enhanced
+        return self.fusion(torch.cat([ll_gated, hl_gated, lh_gated, hh_gated], dim=1))
