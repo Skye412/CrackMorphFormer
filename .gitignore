@@ -11,3 +11,4 @@ save/
 .ipynb_checkpoints/
 vis_results/
 test_results/
+results/
