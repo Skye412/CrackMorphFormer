@@ -70,7 +70,7 @@ class CrackMorphFormer(nn.Module):
     def __init__(self, channel=64, num_queries=16):
         super().__init__()
         self.backbone = pvt_v2_b2()
-        path = '/home/skye/data/Skye/DA-WCA1/model/pvt_v2_b2.pth'
+        path = '/home/skye/data/Skye/CrackMorphFormer/model/pvt_v2_b2.pth'
         if os.path.exists(path):
             save_model = torch.load(path, map_location='cpu')
             model_dict = self.backbone.state_dict()

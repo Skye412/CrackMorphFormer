@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,8 +11,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from model.CrackMorphFormer import CrackMorphFormer as MyModel
 from ESDI_dataloader import get_loader
 
-
-EXP_NAME = "CrackMorphFormer_From_Scratch" 
+# ================= 全量实验从零启动配置 =================
+EXP_NAME = "CrackMorphFormer" 
 BASE_DIR = os.path.join("results", EXP_NAME)
 WEIGHTS_DIR = os.path.join(BASE_DIR, "weights")
 LOG_DIR = os.path.join(BASE_DIR, "txt")
@@ -83,7 +84,7 @@ def run_train_stage(stage, fold, synth_root, s2ds_root, pretrain_weights=None):
     best_weight_path = os.path.join(WEIGHTS_DIR, f"best_{stage}_fold{fold}.pth" if stage == "finetune" else "best_synth_pretrained.pth")
 
     if stage == "pretrain":
-        logger.info(f"\n🚀 [Stage 1] 合成域重新训练开始...")
+        logger.info(f"\n🚀 [Stage 1] 合成域从零重新训练开始...")
         loader = get_loader(synth_root, 'synthcrack', 'train', 1, batch_size, train_size)
         v_loader = get_loader(synth_root, 'synthcrack', 'val', 1, 1, train_size, shuffle=False)
         base_criterion = nn.BCEWithLogitsLoss(reduction='none')
@@ -91,7 +92,7 @@ def run_train_stage(stage, fold, synth_root, s2ds_root, pretrain_weights=None):
             vm = (t != 255).float(); ct = t.clone(); ct[t == 255] = 0.0
             return (base_criterion(p, ct) * vm).sum() / (vm.sum() + 1e-8)
     else:
-        logger.info(f"\n🔥 [Stage 2] S2DS 第 {fold} 折微调启动...")
+        logger.info(f"\n🔥 [Stage 2] S2DS 第 {fold} 折微调启动 (100% Patch 策略)...")
         loader = get_loader(s2ds_root, 's2ds5', 'train', fold, batch_size, train_size)
         v_loader = get_loader(s2ds_root, 's2ds5', 'val', fold, 1, train_size, shuffle=False)
         loss_func = BoundaryRelaxedLoss(alpha=0.2)
@@ -103,7 +104,7 @@ def run_train_stage(stage, fold, synth_root, s2ds_root, pretrain_weights=None):
 
     for ep in range(epoch_num):
         net.train(); l_epoch = 0.0
-        pbar = tqdm(loader, desc=f"Ep {ep+1}", unit="batch", leave=False)
+        pbar = tqdm(loader, desc=f"Fold {fold} Ep {ep+1}" if stage=="finetune" else f"Pretrain Ep {ep+1}", unit="batch", leave=False)
         for data in pbar:
             imgs, gts = data['image'].cuda(), data['label'].cuda()
             optimizer.zero_grad()
@@ -121,12 +122,10 @@ def run_train_stage(stage, fold, synth_root, s2ds_root, pretrain_weights=None):
 def main():
     SYNTH_ROOT = "/home/skye/data/Skye/databases/synthcrack"
     S2DS_ROOT = "/home/skye/data/Skye/databases/s2ds5"
-    
-    logger.info(">>> 开始全量从零训练流程：CrackMorphFormer架构 <<<")
-    # 第一步：从零开始合成预训练
+    logger.info(">>> 启动全量从零训练：CrackMorphFormer架构 <<<")
+    # 步骤 1：合成域预训练
     new_best_pretrain = run_train_stage("pretrain", 1, SYNTH_ROOT, S2DS_ROOT)
-    
-    # 第二步：基于新跑出的权重进行五折微调
+    # 步骤 2：真实域五折微调
     for fold in range(1, 6):
         run_train_stage("finetune", fold, SYNTH_ROOT, S2DS_ROOT, pretrain_weights=new_best_pretrain)
 
