@@ -12,3 +12,11 @@ save/
 vis_results/
 test_results/
 results/
+s2ds_prediction_vis_all_5fold/
+external_eval_crackseg9k/
+cliou_eval_v2/
+cliou_eval_scsegamba/
+cliou_eval_scsegamba_5fold/
+cliou_eval_scsegamba_5fold_v2/
+crackseg9k_eval_cmf_5fold_vis/
+alltheline/
